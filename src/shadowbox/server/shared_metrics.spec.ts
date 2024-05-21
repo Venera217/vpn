@@ -29,7 +29,9 @@ import {
   OutlineSharedMetricsPublisher,
   SharedMetricsPublisher,
   UsageMetrics,
+  PrometheusUsageMetrics,
 } from './shared_metrics';
+import {PrometheusClient, QueryResultData} from '../infrastructure/prometheus_scraper';
 
 describe('OutlineSharedMetricsPublisher', () => {
   let clock: ManualClock;
@@ -90,11 +92,11 @@ describe('OutlineSharedMetricsPublisher', () => {
     describe('for server usage', () => {
       it('is sending correct reports', async () => {
         usageMetrics.locationUsage = [
-          {country: 'AA', inboundBytes: 11},
-          {country: 'BB', inboundBytes: 11},
-          {country: 'CC', inboundBytes: 22},
-          {country: 'AA', inboundBytes: 33},
-          {country: 'DD', inboundBytes: 33},
+          {country: 'AA', inboundBytes: 11, tunnelTimeSec: 99},
+          {country: 'BB', inboundBytes: 11, tunnelTimeSec: 88},
+          {country: 'CC', inboundBytes: 22, tunnelTimeSec: 77},
+          {country: 'AA', inboundBytes: 33, tunnelTimeSec: 66},
+          {country: 'DD', inboundBytes: 33, tunnelTimeSec: 55},
         ];
         clock.nowMs += 60 * 60 * 1000;
 
@@ -105,70 +107,70 @@ describe('OutlineSharedMetricsPublisher', () => {
           startUtcMs: startTime,
           endUtcMs: clock.nowMs,
           userReports: [
-            {bytesTransferred: 11, countries: ['AA']},
-            {bytesTransferred: 11, countries: ['BB']},
-            {bytesTransferred: 22, countries: ['CC']},
-            {bytesTransferred: 33, countries: ['AA']},
-            {bytesTransferred: 33, countries: ['DD']},
+            {bytesTransferred: 11, tunnelTimeSec: 99, countries: ['AA']},
+            {bytesTransferred: 11, tunnelTimeSec: 88, countries: ['BB']},
+            {bytesTransferred: 22, tunnelTimeSec: 77, countries: ['CC']},
+            {bytesTransferred: 33, tunnelTimeSec: 66, countries: ['AA']},
+            {bytesTransferred: 33, tunnelTimeSec: 55, countries: ['DD']},
           ],
         });
       });
 
       it('sends ASN data if present', async () => {
         usageMetrics.locationUsage = [
-          {country: 'DD', asn: 999, inboundBytes: 44},
-          {country: 'EE', inboundBytes: 55},
+          {country: 'DD', asn: 999, inboundBytes: 44, tunnelTimeSec: 11},
+          {country: 'EE', inboundBytes: 55, tunnelTimeSec: 22},
         ];
         clock.nowMs += 60 * 60 * 1000;
 
         await clock.runCallbacks();
 
         expect(metricsCollector.collectedServerUsageReport.userReports).toEqual([
-          {bytesTransferred: 44, countries: ['DD'], asn: 999},
-          {bytesTransferred: 55, countries: ['EE']},
+          {bytesTransferred: 44, tunnelTimeSec: 11, countries: ['DD'], asn: 999},
+          {bytesTransferred: 55, tunnelTimeSec: 22, countries: ['EE']},
         ]);
       });
 
       it('resets metrics to avoid double reporting', async () => {
         usageMetrics.locationUsage = [
-          {country: 'AA', inboundBytes: 11},
-          {country: 'BB', inboundBytes: 11},
+          {country: 'AA', inboundBytes: 11, tunnelTimeSec: 77},
+          {country: 'BB', inboundBytes: 11, tunnelTimeSec: 88},
         ];
         clock.nowMs += 60 * 60 * 1000;
         startTime = clock.nowMs;
         await clock.runCallbacks();
         usageMetrics.locationUsage = [
           ...usageMetrics.locationUsage,
-          {country: 'CC', inboundBytes: 22},
-          {country: 'DD', inboundBytes: 22},
+          {country: 'CC', inboundBytes: 22, tunnelTimeSec: 99},
+          {country: 'DD', inboundBytes: 22, tunnelTimeSec: 0},
         ];
         clock.nowMs += 60 * 60 * 1000;
 
         await clock.runCallbacks();
 
         expect(metricsCollector.collectedServerUsageReport.userReports).toEqual([
-          {bytesTransferred: 22, countries: ['CC']},
-          {bytesTransferred: 22, countries: ['DD']},
+          {bytesTransferred: 22, tunnelTimeSec: 99, countries: ['CC']},
+          {bytesTransferred: 22, tunnelTimeSec: 0, countries: ['DD']},
         ]);
       });
 
       it('ignores sanctioned countries', async () => {
         usageMetrics.locationUsage = [
-          {country: 'AA', inboundBytes: 11},
-          {country: 'SY', inboundBytes: 11},
-          {country: 'CC', inboundBytes: 22},
-          {country: 'AA', inboundBytes: 33},
-          {country: 'DD', inboundBytes: 33},
+          {country: 'AA', inboundBytes: 11, tunnelTimeSec: 1},
+          {country: 'SY', inboundBytes: 11, tunnelTimeSec: 2},
+          {country: 'CC', inboundBytes: 22, tunnelTimeSec: 3},
+          {country: 'AA', inboundBytes: 33, tunnelTimeSec: 4},
+          {country: 'DD', inboundBytes: 33, tunnelTimeSec: 5},
         ];
         clock.nowMs += 60 * 60 * 1000;
 
         await clock.runCallbacks();
 
         expect(metricsCollector.collectedServerUsageReport.userReports).toEqual([
-          {bytesTransferred: 11, countries: ['AA']},
-          {bytesTransferred: 22, countries: ['CC']},
-          {bytesTransferred: 33, countries: ['AA']},
-          {bytesTransferred: 33, countries: ['DD']},
+          {bytesTransferred: 11, tunnelTimeSec: 1, countries: ['AA']},
+          {bytesTransferred: 22, tunnelTimeSec: 3, countries: ['CC']},
+          {bytesTransferred: 33, tunnelTimeSec: 4, countries: ['AA']},
+          {bytesTransferred: 33, tunnelTimeSec: 5, countries: ['DD']},
         ]);
       });
     });
@@ -220,6 +222,68 @@ describe('OutlineSharedMetricsPublisher', () => {
 
     expect(metricsCollector.collectServerUsageMetrics).not.toHaveBeenCalled();
     expect(metricsCollector.collectFeatureMetrics).not.toHaveBeenCalled();
+  });
+});
+
+describe('PrometheusUsageMetrics', () => {
+  let prometheusClient: jasmine.SpyObj<PrometheusClient>;
+  let publisher: PrometheusUsageMetrics;
+
+  beforeEach(() => {
+    prometheusClient = jasmine.createSpyObj('PrometheusClient', ['query']);
+    publisher = new PrometheusUsageMetrics(prometheusClient);
+  });
+
+  it('returns a list of location usage', async () => {
+    const mockDataBytesResponse: QueryResultData = {
+      resultType: 'vector',
+      result: [
+        {
+          metric: {location: 'US', asn: '15169'},
+          value: [Date.now() / 1000, '123'],
+        },
+        {
+          metric: {location: 'NL', asn: '1136'},
+          value: [Date.now() / 1000, '456'],
+        },
+      ],
+    };
+    const mockTunnelTimeResponse: QueryResultData = {
+      resultType: 'vector',
+      result: [
+        {
+          metric: {location: 'US', asn: '15169'},
+          value: [Date.now() / 1000, '9999'],
+        },
+        {
+          metric: {location: 'FR'},
+          value: [Date.now() / 1000, '8888'],
+        },
+      ],
+    };
+    prometheusClient.query.and.returnValues(
+      Promise.resolve(mockDataBytesResponse),
+      Promise.resolve(mockTunnelTimeResponse)
+    );
+
+    const observedUsage = await publisher.getLocationUsage();
+
+    expect(observedUsage).toEqual([
+      {country: 'US', asn: 15169, inboundBytes: 123, tunnelTimeSec: 9999},
+      {country: 'NL', asn: 1136, inboundBytes: 456, tunnelTimeSec: 0},
+      {country: 'FR', asn: undefined, inboundBytes: 0, tunnelTimeSec: 8888},
+    ]);
+  });
+
+  it('returns an empty list when there is no location usage', async () => {
+    prometheusClient.query.and.returnValue(
+      Promise.resolve({
+        resultType: 'vector',
+        result: [],
+      })
+    );
+
+    expect(await publisher.getLocationUsage()).toEqual([]);
   });
 });
 
